@@ -1,12 +1,9 @@
 import 'dart:io';
-
-import 'package:cr_file_saver/file_saver.dart';
+import 'package:cloud_firestore/cloud_firestore.dart' as fireStore;
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
-
-import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:record/record.dart';
 import 'package:audioplayers/audioplayers.dart';
@@ -19,6 +16,9 @@ class Home_page extends StatefulWidget {
 }
 
 class _Home_pageState extends State<Home_page> {
+  final firebase = FirebaseAuth.instance;
+  UploadTask? uploadTask;
+
   bool _is_recording = false;
 
   late Record audiorecord;
@@ -42,57 +42,6 @@ class _Home_pageState extends State<Home_page> {
     super.dispose();
   }
 
-  Future<bool> save(String url, String filename) async {
-    Directory directory;
-
-// Here we are just checking if the user device is android or IOS
-    try {
-      if (Platform.isAndroid) {
-        if (await _requestPermission(Permission.storage)) {
-          print("Running");
-          directory = (await getTemporaryDirectory());
-          print("Save Fuction");
-          print(directory.path + "\nDirectory Path");
-          String newPath = "";
-          directory.path.split("/");
-
-          List<String> folders = directory.path.split("/");
-          for (var x = 1; x < folders.length; x++) {
-            String folder = folders[x];
-            if (folder != "0") {
-              newPath += "/" + folder;
-            } else {
-              break;
-            }
-          }
-          print(newPath + "non");
-          newPath = newPath + "/test_recording";
-
-          directory = Directory(newPath);
-          print(directory.path);
-        } else {
-          return false;
-        }
-      } else {
-        if (await _requestPermission(Permission.photos)) {
-          directory = await getTemporaryDirectory();
-        } else {
-          return false;
-        }
-      }
-
-      File save_File = File(directory.path)..createSync(recursive: true);
-      print(save_File);
-      await CRFileSaver.saveFile(save_File.toString(),
-          destinationFileName: "Test_Record.m4a");
-
-      // To save with the file name.
-    } catch (e) {
-      print("Save Fuction Exection :: $e");
-    }
-    return false;
-  }
-
   Future<bool> _requestPermission(Permission permission) async {
     if (await permission.isGranted) {
       return true;
@@ -106,18 +55,6 @@ class _Home_pageState extends State<Home_page> {
         return false;
       }
     }
-  }
-
-  saveFile() async {
-    setState(() {
-      file_Saved = true;
-    });
-
-    bool saved = await save(audioPath, "Recording_test.m4a");
-
-    setState(() {
-      file_Saved = false;
-    });
   }
 
   Future<void> startRecording() async {
@@ -149,6 +86,13 @@ class _Home_pageState extends State<Home_page> {
     }
   }
 
+  void removeSpecialCharacters() {
+    final output = audioPath.replaceAll(audioPath, '');
+    setState(() {
+      audioPath = output;
+    });
+  }
+
   Future<void> playRecording(String path) async {
     try {
       print("****************************");
@@ -162,6 +106,33 @@ class _Home_pageState extends State<Home_page> {
 
   Future logOut() async {
     await FirebaseAuth.instance.signOut();
+  }
+
+  Future uploadFile() async {
+    final List<String> folders = audioPath.split("/");
+    print(folders[folders.length - 1]);
+    final path =
+        "${firebase.currentUser!.uid.toString()}/ ${folders[folders.length - 1]}";
+    final file = File(audioPath);
+
+    final ref = FirebaseStorage.instance.ref().child(path);
+    setState(() {
+      uploadTask = ref.putFile(file);
+    });
+
+    final snapshot = await uploadTask!.whenComplete(() {});
+    setState(() {
+      uploadTask = null;
+    });
+    final urlDownload = await snapshot.ref.getDownloadURL();
+    print(urlDownload);
+
+    setState(() async {
+      await fireStore.FirebaseFirestore.instance
+          .collection("${await firebase.currentUser!.uid}")
+          .doc()
+          .set({"url": "${await urlDownload}"});
+    });
   }
 
   @override
@@ -239,16 +210,51 @@ class _Home_pageState extends State<Home_page> {
                 children: [
                   ElevatedButton(
                       onPressed: () async {
-                        await saveFile();
+                        uploadFile();
                       },
                       child: Text("Save the audio")),
                   ElevatedButton(
-                      onPressed: () {}, child: Text("Delete the audio")),
+                      onPressed: removeSpecialCharacters,
+                      child: Text("Delete the audio")),
                 ],
               ),
-            )
+            ),
+          buildProgress()
         ],
       )),
     );
   }
+
+  Widget buildProgress() => StreamBuilder<TaskSnapshot>(
+        stream: uploadTask?.snapshotEvents,
+        builder: (context, snapshot) {
+          if (snapshot.hasData) {
+            final data = snapshot.data!;
+            double progress = data.bytesTransferred / data.totalBytes;
+            return SizedBox(
+              height: 50,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  LinearProgressIndicator(
+                    value: progress,
+                    backgroundColor: Colors.grey,
+                    color: Colors.greenAccent,
+                  ),
+                  Center(
+                    child: Text(
+                      "${100 * progress.roundToDouble()}%",
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          } else {
+            return const SizedBox(
+              height: 30,
+            );
+          }
+        },
+      );
 }
